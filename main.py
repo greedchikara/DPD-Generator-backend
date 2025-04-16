@@ -1,11 +1,11 @@
-from fastapi import FastAPI, Form, UploadFile, File, Depends
+from fastapi import Body, FastAPI, Form, UploadFile, File, Depends
 from typing import List, Dict
-import os, shutil, json
-import uuid
+import os
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from services.ai.factory import ai_provider_dependency
 from services.ai.ai_providers.base import AIProvider
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -19,29 +19,48 @@ app.add_middleware(
 
 os.makedirs(os.environ.get("UPLOAD_DIR"), exist_ok=True)
 
+class Item(BaseModel):
+    photos: list
+    answers: dict
+
 @app.get("/health-checkup")
 async def health_checkup():
     return {"message": "Everything is fine!"}
 
-@app.post("/generate-description")
-async def generate_description(photos: List[UploadFile] = File(...), answers: str = Form(default=None), ai_provider: AIProvider = Depends(ai_provider_dependency)):
+@app.post("/upload/chunks")
+async def upload_chunks(file: UploadFile =File(...), name: str = Form(...), chunk_number: int = Form(0), total_chunks: int = Form(1)):
+    is_last = int(chunk_number) + 1 == int(total_chunks)
+    file_name = f"{name}-{chunk_number}"
+    chunk_path = os.path.join(os.environ.get("UPLOAD_DIR"), file_name)
+    with open(chunk_path, "wb") as buffer:
+        buffer.write(await file.read())
+    buffer.close()
     
-    filenames = []
+    if is_last:
+        full_file_path = os.path.join(os.environ.get("UPLOAD_DIR"), name)
+        with open(full_file_path, "wb") as buffer:
+            chunk = 0
+            while chunk < total_chunks:
+                chunk_path = os.path.join(os.environ.get("UPLOAD_DIR"), f"{name}-{chunk}")
+                with open(chunk_path, "rb") as infile:
+                    buffer.write(infile.read())
+                    infile.close()
+                os.remove(f"{os.environ.get('UPLOAD_DIR')}/{name}-{chunk}")
+                chunk += 1
+        buffer.close()
+        return {"message": "File uploaded successfully!"}
+    return {"message": f"Chunk number {chunk_number} uploaded successfully!", "file_url": os.path.join(os.environ.get("UPLOAD_DIR"), name)}
+    
 
-    for photo in photos:
-        uid = str(uuid.uuid4()) + "_" + photo.filename
-        path = os.path.join(os.environ.get("UPLOAD_DIR"), uid)
-        with open(path, "wb") as buffer:
-            shutil.copyfileobj(photo.file, buffer)
-        filenames.append(uid)
+@app.post("/generate-description")
+async def generate_description(data: Item = Body(...), ai_provider: AIProvider = Depends(ai_provider_dependency)):
+    if (len(data.photos) == 0):
+        return {"message": "Please select atleast 1 photo!"}  
     
-    answers_list = []
-    if (answers):
-        answers_list = json.loads(answers)    
-    
-    prompt = build_prompt(answers_list, filenames)
+    prompt = build_prompt(data.answers, data.photos)
+   
     description = ai_provider.generate_content("gemini-2.0-flash", prompt)
-    return {"description": description}
+    return {"message": "Successfully created description", "description": description}
     
 def build_prompt(answers: Dict, photos: List[str]):
 
