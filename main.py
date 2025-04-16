@@ -12,7 +12,6 @@ load_dotenv()
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,8 +33,8 @@ async def upload_chunks(file: UploadFile =File(...), name: str = Form(...), chun
     file_name = f"{name}-{chunk_number}"
     chunk_path = os.path.join(os.environ.get("UPLOAD_DIR"), file_name)
     with open(chunk_path, "wb") as buffer:
-        buffer.write(await file.read())
-    buffer.close()
+        while content := await file.read(1024 * 64):  # 64KB buffer read
+            buffer.write(content)
     
     if is_last:
         full_file_path = os.path.join(os.environ.get("UPLOAD_DIR"), name)
